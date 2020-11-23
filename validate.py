@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.nn.parallel
 from collections import OrderedDict
 from contextlib import suppress
+import torch_neuron
 
 from timm.models import create_model, apply_test_time_pool, load_checkpoint, is_model, list_models
 from timm.data import Dataset, DatasetTar, create_loader, resolve_data_config, RealLabelsImagenet
@@ -102,6 +103,8 @@ parser.add_argument('--real-labels', default='', type=str, metavar='FILENAME',
                     help='Real labels JSON file for imagenet evaluation')
 parser.add_argument('--valid-labels', default='', type=str, metavar='FILENAME',
                     help='Valid label indices txt file for validation of partial label space')
+# neuron sdk
+parser.add_argument('--neuron', action="store_true", help='Whether to use neuron')
 
 
 def validate(args):
@@ -124,19 +127,23 @@ def validate(args):
         set_jit_legacy()
 
     # create model
-    model = create_model(
-        args.model,
-        pretrained=args.pretrained,
-        num_classes=args.num_classes,
-        in_chans=3,
-        global_pool=args.gp,
-        scriptable=args.torchscript)
+    if args.neuron:
+        model = torch.jit.load(args.checkpoint)
+    else:
+        model = create_model(
+            args.model,
+            pretrained=args.pretrained,
+            num_classes=args.num_classes,
+            in_chans=3,
+            global_pool=args.gp,
+            scriptable=args.torchscript)
 
     if args.checkpoint:
         load_checkpoint(model, args.checkpoint, args.use_ema)
 
-    param_count = sum([m.numel() for m in model.parameters()])
-    _logger.info('Model %s created, param count: %d' % (args.model, param_count))
+    if not args.neuron:
+        param_count = sum([m.numel() for m in model.parameters()])
+        _logger.info('Model %s created, param count: %d' % (args.model, param_count))
 
     data_config = resolve_data_config(vars(args), model=model)
     model, test_time_pool = (model, False) if args.no_test_pool else apply_test_time_pool(model, data_config)
@@ -145,17 +152,20 @@ def validate(args):
         torch.jit.optimized_execution(True)
         model = torch.jit.script(model)
 
-    model = model.cuda()
-    if args.apex_amp:
-        model = amp.initialize(model, opt_level='O1')
+    if not args.neuron:
+        model = model.cuda()
+        if args.apex_amp:
+            model = amp.initialize(model, opt_level='O1')
 
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
 
-    if args.num_gpu > 1:
+    if args.num_gpu > 1 and not args.neuron:
         model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu)))
 
-    criterion = nn.CrossEntropyLoss().cuda()
+    criterion = nn.CrossEntropyLoss()
+    if not args.neuron:
+        criterion = criterion.cuda()
 
     if os.path.splitext(args.data)[1] == '.tar' and os.path.isfile(args.data):
         dataset = DatasetTar(args.data, load_bytes=args.tf_preprocessing, class_map=args.class_map)
@@ -196,20 +206,26 @@ def validate(args):
     model.eval()
     with torch.no_grad():
         # warmup, reduce variability of first batch time, especially for comparing torchscript vs non
-        input = torch.randn((args.batch_size,) + data_config['input_size']).cuda()
+        input = torch.randn((args.batch_size,) + data_config['input_size'])
+        if not args.neuron:
+            input = input.cuda()
         if args.channels_last:
             input = input.contiguous(memory_format=torch.channels_last)
         model(input)
         end = time.time()
         for batch_idx, (input, target) in enumerate(loader):
             if args.no_prefetcher:
-                target = target.cuda()
-                input = input.cuda()
+                if not args.neuron:
+                    target = target.cuda()
+                    input = input.cuda()
             if args.channels_last:
                 input = input.contiguous(memory_format=torch.channels_last)
 
             # compute output
-            with amp_autocast():
+            if not args.neuron:
+                with amp_autocast():
+                    output = model(input)
+            else:
                 output = model(input)
 
             if valid_labels is not None:
