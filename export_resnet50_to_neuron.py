@@ -9,9 +9,9 @@ import logging
 logger = logging.getLogger('Neuron')
 logger.setLevel(logging.INFO)
 
-bsize = 64
+bsize = 32
 
-image = torch.zeros([64, 3, 224, 224], dtype=torch.float32)
+image = torch.zeros([bsize, 3, 224, 224], dtype=torch.float32)
 
 ## Load a pretrained ResNet50 model
 # model = models.resnet50(pretrained=True)
@@ -21,7 +21,7 @@ model = create_model(model_name="resnet50", pretrained=True, num_classes=1000)
 model.eval()
 
 ## Analyze the model - this will show operator support and operator count
-torch.neuron.analyze_model( model, example_inputs=[image] )
+# torch.neuron.analyze_model( model, example_inputs=[image] )
 
 ## Now compile the model - with logging set to "info" we will see
 ## what compiles for Neuron, and if there are any fallbacks

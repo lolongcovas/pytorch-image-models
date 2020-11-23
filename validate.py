@@ -138,8 +138,8 @@ def validate(args):
             global_pool=args.gp,
             scriptable=args.torchscript)
 
-    if args.checkpoint:
-        load_checkpoint(model, args.checkpoint, args.use_ema)
+        if args.checkpoint:
+            load_checkpoint(model, args.checkpoint, args.use_ema)
 
     if not args.neuron:
         param_count = sum([m.numel() for m in model.parameters()])
